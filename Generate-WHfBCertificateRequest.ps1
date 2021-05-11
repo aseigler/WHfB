@@ -156,7 +156,7 @@ _continue_ = "UPN=$UPN&"
 
     Write-Output "Certificate Request is being generated"
     $INF | Out-File -Filepath $INFPath -Force
-    #certreq -new $INFPath $CSRPath
+    certreq.exe -new $INFPath $CSRPath
     Write-Output "Certificate Request has been generated"
 
 }
