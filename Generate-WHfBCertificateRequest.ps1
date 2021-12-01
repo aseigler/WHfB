@@ -70,7 +70,6 @@ param(
 )
 
 # Initialize variables
-$ngcKeyName = $null
 $UPN = $null
 $keyContainer = $null
 $template = $null
@@ -83,55 +82,78 @@ CertificateTemplate = $certificateTemplate
 "@  
 }
 
-try {
-    # Check whether this version of Windows will allow use of DSRegCmd.exe
-    $OSVersion = ([environment]::OSVersion.Version).Major
-    $OSBuild = ([environment]::OSVersion.Version).Build
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Runtime.InteropServices;
 
-    if (($OSVersion -ge 10) -and ($OSBuild -ge 1511)){
-        $dsReg = dsregcmd.exe /status    # Retrieve DSRegCmd.exe /status data
-    }
-    else{
-        # DSRegCmd.exe will not work.
-        throw "The device has a Windows down-level OS version. Run this test on current OS versions e.g. Windows 10, Server 2016 and above."
-    }
+public class NetAPI32{
 
-    # Retrieve the current user's UPN from $dsReg
-    $exAccName = $dsReg | Select-String "Executing Account Name"
-    if ($null -ne $exAccName){
-        $exAccAliases = ($exAccName.ToString() -split " ")[-1]
-        foreach ($exAccAlias in $exAccAliases)
-        {
-            if ($exAccAlias -like "*@*")
-            {
-                $UPN = $exAccAlias.Trim()
-            }
-        }
+	[StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct DSREG_USER_INFO {
+        [MarshalAs(UnmanagedType.LPWStr)] public string UserEmail;
+        [MarshalAs(UnmanagedType.LPWStr)] public string UserKeyId;
+        [MarshalAs(UnmanagedType.LPWStr)] public string UserKeyName;
     }
 
-    $ngcKeyName = $dsReg | Select-String "NgcKeyName"
-    if ($null -ne $ngcKeyName){
-        $UPN = (($ngcKeyName.ToString() -split "/")[-1])
+	[StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct DSREG_JOIN_INFO
+    {
+        public int joinType;
+        public IntPtr pJoinCertificate;
+        [MarshalAs(UnmanagedType.LPWStr)] public string DeviceId;
+        [MarshalAs(UnmanagedType.LPWStr)] public string IdpDomain;
+        [MarshalAs(UnmanagedType.LPWStr)] public string TenantId;
+        [MarshalAs(UnmanagedType.LPWStr)] public string JoinUserEmail;
+        [MarshalAs(UnmanagedType.LPWStr)] public string TenantDisplayName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string MdmEnrollmentUrl;
+        [MarshalAs(UnmanagedType.LPWStr)] public string MdmTermsOfUseUrl;
+        [MarshalAs(UnmanagedType.LPWStr)] public string MdmComplianceUrl;
+        [MarshalAs(UnmanagedType.LPWStr)] public string UserSettingSyncUrl;
+        public IntPtr pUserInfo;
     }
 
-    if ($null -eq $UPN){
-       throw "The UPN for the current user could not be retrieved."
-    }
+    [DllImport("netapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern void NetFreeAadJoinInformation(
+            IntPtr pJoinInfo);
 
-    # Retrieve the current user's WHfB Key Container from certutil.exe
-    $certUtl = certutil.exe -user -csp "Microsoft Passport Key Storage Provider" -key
-    foreach ($certRow in $certUtl){
-        if ($certRow -like "*$UPN"){
-            $keyContainer = $certRow.Trim()
-        }
-    }
+    [DllImport("netapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern int NetGetAadJoinInformation(
+            string pcszTenantId,
+            out IntPtr ppJoinInfo);
+}
+'@
 
-    if ($null -eq $keyContainer){
-        throw "Windows Hello for Business is not deployed to this device."
-    }
+$pcszTenantId = $null
+$ptrJoinInfo = [IntPtr]::Zero
 
-    # Build certificate request .inf file
-    $INF =
+# https://docs.microsoft.com/en-us/windows/win32/api/lmjoin/nf-lmjoin-netgetaadjoininformation
+#[NetAPI32]::NetFreeAadJoinInformation([IntPtr]::Zero);
+$retValue = [NetAPI32]::NetGetAadJoinInformation($pcszTenantId, [ref]$ptrJoinInfo);
+
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/18d8fbe8-a967-4f1c-ae50-99ca8e491d2d
+if ($retValue -eq 0) 
+{
+    # https://support.microsoft.com/en-us/help/2909958/exceptions-in-windows-powershell-other-dynamic-languages-and-dynamical
+    $ptrJoinInfoObject = New-Object NetAPI32+DSREG_JOIN_INFO
+    $joinInfo = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptrJoinInfo, [System.Type] $ptrJoinInfoObject.GetType())
+
+    $ptrUserInfo = $joinInfo.pUserInfo
+    $ptrUserInfoObject = New-Object NetAPI32+DSREG_USER_INFO
+    $userInfo = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptrUserInfo, [System.Type] $ptrUserInfoObject.GetType())
+
+    $UPN = $userInfo.UserEmail
+    $keyContainer = $userInfo.UserKeyName
+    #Release pointers
+    if ([IntPtr]::Zero -ne $ptrJoinInfo)
+    {
+        [NetAPI32]::NetFreeAadJoinInformation($ptrJoinInfo)
+    }
+}
+
+# Build certificate request .inf file
+$INF =
 @"
 [Version]
 Signature = "`$Windows NT`$"
@@ -154,13 +176,7 @@ $template
 _continue_ = "UPN=$UPN&"
 "@
 
-    Write-Output "Certificate Request is being generated"
-    $INF | Out-File -Filepath $INFPath -Force
-    certreq.exe -new $INFPath $CSRPath
-    Write-Output "Certificate Request has been generated"
-
-}
-catch{
-    $PSCmdlet.ThrowTerminatingError($PSItem)
-}
-Write-Output "Script completed successfully."
+Write-Output "Certificate Request is being generated"
+$INF | Out-File -Filepath $INFPath -Force
+certreq.exe -new $INFPath $CSRPath
+Write-Output "Certificate Request has been generated at $CSRPath"
