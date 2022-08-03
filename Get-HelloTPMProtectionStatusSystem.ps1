@@ -26,7 +26,7 @@ foreach($entry in $ngc){
     $username = (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value
     $tpmProtected = (Get-Content (Join-Path $entry.FullName -ChildPath '7.dat')) -eq 'Microsoft Platform Crypto Provider'
     $tpmStatus = Get-Tpm
-    return [PSCustomObject]@{
+    [PSCustomObject]@{
         UserName = $username
         TpmProtected = $tpmProtected
         TpmPresent = $tpmStatus.TpmPresent
