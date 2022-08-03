@@ -14,7 +14,7 @@ PSCustomObject
 This cmdlet returns a PSCustomObject object that contains the following information:
 
 -- UserName. The name of the user account associated with the credential in DOMAIN\username form
--- TpmProtected. Whether the credential is back with a trusted platform module
+-- TpmProtected. Whether the credential is backed with a trusted platform module
 -- TpmPresent. Whether there is a TPM on the current computer
 #>
 
